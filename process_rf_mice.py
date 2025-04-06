@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-数据处理脚本：使用MaxAbsScaler归一化和OTimputer填补缺失值
+数据处理脚本：使用MaxAbsScaler归一化和随机森林MICE填补缺失值
 
 这个脚本实现以下功能：
-1. 读取juhe.csv数据文件
+1. 读取cell_performance.csv数据文件
 2. 对数据进行MaxAbsScaler归一化（忽略NaN值）
-3. 使用OTimputer算法填补缺失值
+3. 使用随机森林MICE算法填补缺失值
 4. 将填补后的数据还原回原始尺度
 5. 保存结果到CSV文件
 """
@@ -25,9 +25,10 @@ logger = logging.getLogger()
 # 设置PyTorch默认张量类型
 torch.set_default_tensor_type('torch.DoubleTensor')
 
-# 导入自定义模块
-from imputers import OTimputer
-from utils import pick_epsilon
+# 导入MICE相关模块和随机森林
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+from sklearn.ensemble import RandomForestRegressor
 
 
 class MaxAbsScaler:
@@ -179,7 +180,7 @@ def process_data(input_file, output_file):
     try:
         # 读取CSV文件
         logger.info(f"读取数据文件: {input_file}")
-        df = pd.read_csv(input_file, header=0)
+        df = pd.read_csv(input_file)
         data = df.to_numpy().astype(float)
         
         # 创建MaxAbsScaler并拟合数据
@@ -206,29 +207,33 @@ def process_data(input_file, output_file):
         # 对整个数据集进行转换
         logger.info("对整个数据集进行归一化")
         data_for_im_np = scaler.transform(data)
-        data_for_im = torch.from_numpy(data_for_im_np)
         
-        # 设置OTimputer参数
-        n, d = data_for_im.shape
-        batchsize = min(128, n // 2)  # 确保batchsize不超过数据集大小的一半
-        if batchsize < 1:
-            batchsize = 1
-        lr = 1e-2
-        epsilon = pick_epsilon(data_for_im)
-        logger.info(f"OTimputer参数 - epsilon: {epsilon}, batchsize: {batchsize}")
+        # 设置随机森林MICE参数
+        logger.info("开始使用随机森林MICE填补缺失值...")
+        # 配置随机森林回归器
+        rf_regressor = RandomForestRegressor(
+            n_estimators=100,  # 森林中树的数量
+            max_depth=10,      # 树的最大深度
+            min_samples_split=2,  # 分裂内部节点所需的最小样本数
+            min_samples_leaf=1,   # 叶节点所需的最小样本数
+            random_state=42       # 随机种子，确保结果可重现
+        )
         
-        # 创建并使用OTimputer填补缺失值
-        logger.info("开始使用OTimputer填补缺失值...")
-        sk_imputer = OTimputer(eps=epsilon, batchsize=batchsize, lr=lr, niter=2000)
-        sk_imp = sk_imputer.fit_transform(data_for_im, verbose=True, report_interval=500)
+        # 创建使用随机森林作为估计器的MICE插补器
+        rf_mice_imputer = IterativeImputer(
+            estimator=rf_regressor,  # 使用随机森林作为估计器
+            random_state=42,         # 随机种子
+            max_iter=50,             # 最大迭代次数
+            verbose=1                # 显示进度信息
+        )
+        
+        imputed_data = rf_mice_imputer.fit_transform(data_for_im_np)
         logger.info("缺失值填补完成")
         
         # 将填补后的数据转换回原始尺度
         logger.info("将填补后的数据还原回原始尺度")
-        imp = sk_imp.detach().cpu().numpy()
-        df_imp = scaler.inverse_transform(imp)
+        df_imp = scaler.inverse_transform(imputed_data)
         df_imp = pd.DataFrame(df_imp, columns=df.columns) 
-        df.to_csv("cleaned_repaired_data.csv", index=False) # 使用原始列名
         
         # 保存为CSV文件
         logger.info(f"保存结果到: {output_file}")
@@ -241,13 +246,15 @@ def process_data(input_file, output_file):
         
     except Exception as e:
         logger.error(f"处理过程中出错: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
     # 设置文件路径
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    input_file = os.path.join(current_dir, "mpi.csv")
-    output_file = os.path.join(current_dir, "imputed_maxabs_mpi.csv")
+    input_file = os.path.join(current_dir, "cell_performance.csv")
+    output_file = os.path.join(current_dir, "imputed_data_rf_mice.csv")
     
     # 处理数据
     process_data(input_file, output_file)

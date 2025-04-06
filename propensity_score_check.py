@@ -5,11 +5,11 @@
 使用倾向性得分平衡检查比较插补方法
 
 这个脚本实现以下功能：
-1. 读取原始数据(cell_performance.csv)和两种插补方法处理后的数据(imputed_data_maxabs.csv和imputed_data_mice.csv)
+1. 读取原始数据(cell_performance.csv)和三种插补方法处理后的数据(imputed_data_maxabs.csv、imputed_data_mice.csv和imputed_data_rf_mice.csv)
 2. 创建缺失值掩码矩阵，标记原始数据中的缺失值
 3. 构建分类问题：
    a. 区分观测值和插补值
-   b. 区分两种插补方法的结果
+   b. 区分不同插补方法的结果
 4. 使用机器学习模型计算AUC分数
 5. 评估哪种插补方法产生的数据与原始数据分布更接近
 """
@@ -68,9 +68,9 @@ def create_missing_mask(data):
     return data.isna().astype(int)
 
 
-def prepare_comparison_dataset(original_df, maxabs_df, mice_df, mask):
+def prepare_comparison_dataset(original_df, maxabs_df, mice_df, rf_mice_df, mask):
     """
-    准备用于比较两种插补方法的数据集
+    准备用于比较三种插补方法的数据集
     
     参数
     ----------
@@ -80,6 +80,8 @@ def prepare_comparison_dataset(original_df, maxabs_df, mice_df, mask):
         MaxAbs插补后的数据框
     mice_df : pandas.DataFrame
         MICE插补后的数据框
+    rf_mice_df : pandas.DataFrame
+        RF-MICE插补后的数据框
     mask : pandas.DataFrame
         缺失值掩码矩阵
         
@@ -106,16 +108,19 @@ def prepare_comparison_dataset(original_df, maxabs_df, mice_df, mask):
                         # 使用插补后的值作为特征
                         maxabs_value = maxabs_df.iloc[i, k]
                         mice_value = mice_df.iloc[i, k]
+                        rf_mice_value = rf_mice_df.iloc[i, k]
                         row_features[f'maxabs_{other_col}'] = maxabs_value
                         row_features[f'mice_{other_col}'] = mice_value
+                        row_features[f'rf_mice_{other_col}'] = rf_mice_value
                 
-                # 添加两种方法的插补值
+                # 添加三种方法的插补值
                 maxabs_value = maxabs_df.iloc[i, j]
                 mice_value = mice_df.iloc[i, j]
+                rf_mice_value = rf_mice_df.iloc[i, j]
                 
-                # 只有当两个值都不是NaN时才添加记录
-                if not (pd.isna(maxabs_value) or pd.isna(mice_value)):
-                    # 创建两条记录，一条标记为MaxAbs，一条标记为MICE
+                # 只有当三个值都不是NaN时才添加记录
+                if not (pd.isna(maxabs_value) or pd.isna(mice_value) or pd.isna(rf_mice_value)):
+                    # 创建三条记录，分别标记为MaxAbs、MICE和RF-MICE
                     maxabs_record = row_features.copy()
                     maxabs_record['value'] = maxabs_value
                     maxabs_record['method'] = 'MaxAbs'
@@ -128,8 +133,15 @@ def prepare_comparison_dataset(original_df, maxabs_df, mice_df, mask):
                     mice_record['column'] = col
                     mice_record['row'] = i
                     
+                    rf_mice_record = row_features.copy()
+                    rf_mice_record['value'] = rf_mice_value
+                    rf_mice_record['method'] = 'RF-MICE'
+                    rf_mice_record['column'] = col
+                    rf_mice_record['row'] = i
+                    
                     comparison_data.append(maxabs_record)
                     comparison_data.append(mice_record)
+                    comparison_data.append(rf_mice_record)
     
     return pd.DataFrame(comparison_data)
 
@@ -247,51 +259,67 @@ def train_and_evaluate_classifier(data, target_col, feature_cols, test_size=0.3,
     clf = RandomForestClassifier(n_estimators=100, random_state=random_state)
     clf.fit(X_train, y_train)
     
-    # 预测概率
-    y_pred_proba = clf.predict_proba(X_test)[:, 1]
+    # 检查是否为二分类问题
+    n_classes = len(np.unique(y))
+    is_binary = n_classes == 2
     
-    # 计算AUC分数
-    auc_score = roc_auc_score(y_test, y_pred_proba)
+    if is_binary:
+        # 二分类问题
+        y_pred_proba = clf.predict_proba(X_test)[:, 1]
+        auc_score = roc_auc_score(y_test, y_pred_proba)
+    else:
+        # 多分类问题
+        y_pred_proba = clf.predict_proba(X_test)
+        auc_score = roc_auc_score(y_test, y_pred_proba, multi_class='ovr', average='macro')
     
     return {
         'model': clf,
         'auc_score': auc_score,
         'y_test': y_test,
-        'y_pred_proba': y_pred_proba
+        'y_pred_proba': y_pred_proba,
+        'is_binary': is_binary
     }
 
 
 def plot_roc_curve(results_dict, title):
     """
-    绘制ROC曲线
+    Plot ROC curve
     
-    参数
+    Parameters
     ----------
     results_dict : dict
-        包含模型评估结果的字典
+        Dictionary containing model evaluation results
     title : str
-        图表标题
+        Chart title
     """
     plt.figure(figsize=(10, 8))
     
     for method, result in results_dict.items():
-        fpr, tpr, _ = roc_curve(result['y_test'], result['y_pred_proba'])
-        roc_auc = result['auc_score']
-        plt.plot(fpr, tpr, lw=2, label=f'{method} (AUC = {roc_auc:.3f})')
+        # 检查是否为二分类问题
+        if result.get('is_binary', True):  # 默认为二分类，兼容旧版本
+            # 二分类ROC曲线
+            fpr, tpr, _ = roc_curve(result['y_test'], result['y_pred_proba'])
+            roc_auc = result['auc_score']
+            plt.plot(fpr, tpr, lw=2, label=f'{method} (AUC = {roc_auc:.3f})')
+        else:
+            # 多分类情况下，我们只绘制每个方法的总体AUC
+            # 这里简化处理，只显示总体AUC分数
+            roc_auc = result['auc_score']
+            plt.plot([], [], lw=2, label=f'{method} (AUC = {roc_auc:.3f})')
     
     plt.plot([0, 1], [0, 1], 'k--', lw=2)
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
-    plt.xlabel('假阳性率')
-    plt.ylabel('真阳性率')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
     plt.title(title)
     plt.legend(loc='lower right')
     plt.grid(True)
     plt.savefig(f"{title.replace(' ', '_')}.png")
-    print(f"ROC曲线已保存到 '{title.replace(' ', '_')}.png'")
+    print(f"ROC curve saved to '{title.replace(' ', '_')}.png'")
 
 
-def compare_imputation_methods_with_propensity_score(original_file, maxabs_file, mice_file):
+def compare_imputation_methods_with_propensity_score(original_file, maxabs_file, mice_file, rf_mice_file):
     """
     使用倾向性得分平衡检查比较插补方法
     
@@ -303,14 +331,17 @@ def compare_imputation_methods_with_propensity_score(original_file, maxabs_file,
         MaxAbs处理后的数据文件路径
     mice_file : str
         MICE处理后的数据文件路径
+    rf_mice_file : str
+        RF-MICE处理后的数据文件路径
     """
     try:
         # 加载数据
         original_df = load_data(original_file)
         maxabs_df = load_data(maxabs_file)
         mice_df = load_data(mice_file)
+        rf_mice_df = load_data(rf_mice_file)
         
-        if original_df is None or maxabs_df is None or mice_df is None:
+        if original_df is None or maxabs_df is None or mice_df is None or rf_mice_df is None:
             print("无法加载所有必要的数据文件")
             return
         
@@ -322,20 +353,21 @@ def compare_imputation_methods_with_propensity_score(original_file, maxabs_file,
         numeric_cols = original_df.select_dtypes(include=[np.number]).columns.tolist()
         mask = mask[numeric_cols]
         
-        # 准备比较两种插补方法的数据集
-        print("\n准备比较两种插补方法的数据集")
-        method_comparison_df = prepare_comparison_dataset(original_df, maxabs_df, mice_df, mask)
+        # 准备比较三种插补方法的数据集
+        print("\n准备比较三种插补方法的数据集")
+        method_comparison_df = prepare_comparison_dataset(original_df, maxabs_df, mice_df, rf_mice_df, mask)
         
         # 准备比较观测值和插补值的数据集
         print("\n准备比较观测值和插补值的数据集")
         maxabs_obs_imp_df = prepare_observed_vs_imputed_dataset(original_df, maxabs_df, mask, 'MaxAbs')
         mice_obs_imp_df = prepare_observed_vs_imputed_dataset(original_df, mice_df, mask, 'MICE')
+        rf_mice_obs_imp_df = prepare_observed_vs_imputed_dataset(original_df, rf_mice_df, mask, 'RF-MICE')
         
         # 合并观测值和插补值的数据集
-        obs_imp_df = pd.concat([maxabs_obs_imp_df, mice_obs_imp_df])
+        obs_imp_df = pd.concat([maxabs_obs_imp_df, mice_obs_imp_df, rf_mice_obs_imp_df])
         
-        # 训练和评估分类器 - 比较两种插补方法
-        print("\n训练和评估分类器 - 比较两种插补方法")
+        # 训练和评估分类器 - 比较三种插补方法
+        print("\n训练和评估分类器 - 比较三种插补方法")
         # 排除非特征列
         feature_cols = [col for col in method_comparison_df.columns if col not in ['method', 'value', 'column', 'row']]
         method_results = train_and_evaluate_classifier(method_comparison_df, 'method', feature_cols)
@@ -344,7 +376,7 @@ def compare_imputation_methods_with_propensity_score(original_file, maxabs_file,
         print("\n训练和评估分类器 - 比较观测值和插补值")
         # 分别对每种方法进行评估
         obs_imp_results = {}
-        for method in ['MaxAbs', 'MICE']:
+        for method in ['MaxAbs', 'MICE', 'RF-MICE']:
             method_df = obs_imp_df[obs_imp_df['method'] == method]
             # 排除非特征列
             feature_cols = [col for col in method_df.columns if col not in ['is_imputed', 'value', 'column', 'row', 'method']]
@@ -352,13 +384,13 @@ def compare_imputation_methods_with_propensity_score(original_file, maxabs_file,
         
         # 输出结果
         print("\n===== 倾向性得分平衡检查结果 =====")
-        print("\n1. 区分两种插补方法的AUC分数")
+        print("\n1. 区分三种插补方法的AUC分数")
         method_auc = method_results['auc_score']
         print(f"AUC分数: {method_auc:.4f}")
         if method_auc > 0.6:
-            print("结论: 两种插补方法产生的数据有明显差异")
+            print("结论: 三种插补方法产生的数据有明显差异")
         else:
-            print("结论: 两种插补方法产生的数据差异不大")
+            print("结论: 三种插补方法产生的数据差异不大")
         
         print("\n2. 区分观测值和插补值的AUC分数")
         for method, result in obs_imp_results.items():
@@ -367,25 +399,37 @@ def compare_imputation_methods_with_propensity_score(original_file, maxabs_file,
         # 比较哪种方法更好
         maxabs_auc = obs_imp_results['MaxAbs']['auc_score']
         mice_auc = obs_imp_results['MICE']['auc_score']
+        rf_mice_auc = obs_imp_results['RF-MICE']['auc_score']
         
         print("\n3. 插补方法评估")
-        if abs(maxabs_auc - 0.5) < abs(mice_auc - 0.5):
+        # 计算每种方法与0.5的距离（越接近0.5越好）
+        maxabs_dist = abs(maxabs_auc - 0.5)
+        mice_dist = abs(mice_auc - 0.5)
+        rf_mice_dist = abs(rf_mice_auc - 0.5)
+        
+        # 找出距离最小的方法
+        min_dist = min(maxabs_dist, mice_dist, rf_mice_dist)
+        
+        if min_dist == maxabs_dist:
             conclusion = "MaxAbs插补方法产生的数据与原始数据分布更接近"
             winner = "MaxAbs"
-        elif abs(mice_auc - 0.5) < abs(maxabs_auc - 0.5):
+        elif min_dist == mice_dist:
             conclusion = "MICE插补方法产生的数据与原始数据分布更接近"
             winner = "MICE"
+        elif min_dist == rf_mice_dist:
+            conclusion = "RF-MICE插补方法产生的数据与原始数据分布更接近"
+            winner = "RF-MICE"
         else:
-            conclusion = "两种方法在保持数据分布方面表现相当"
+            conclusion = "多种方法在保持数据分布方面表现相当"
             winner = "平局"
         
         print(f"结论: {conclusion}")
         
         # 创建详细比较表格
         comparison_table = [{
-            '评估指标': '区分两种插补方法的AUC分数',
+            '评估指标': '区分三种插补方法的AUC分数',
             'AUC分数': method_auc,
-            '解释': '越接近0.5表示两种方法越相似'
+            '解释': '越接近0.5表示三种方法越相似'
         }, {
             '评估指标': 'MaxAbs方法区分观测值和插补值的AUC分数',
             'AUC分数': maxabs_auc,
@@ -393,6 +437,10 @@ def compare_imputation_methods_with_propensity_score(original_file, maxabs_file,
         }, {
             '评估指标': 'MICE方法区分观测值和插补值的AUC分数',
             'AUC分数': mice_auc,
+            '解释': '越接近0.5表示插补值与观测值越相似'
+        }, {
+            '评估指标': 'RF-MICE方法区分观测值和插补值的AUC分数',
+            'AUC分数': rf_mice_auc,
             '解释': '越接近0.5表示插补值与观测值越相似'
         }, {
             '评估指标': '总体评估',
@@ -403,17 +451,18 @@ def compare_imputation_methods_with_propensity_score(original_file, maxabs_file,
         # 创建比较表格DataFrame并保存
         comparison_df = pd.DataFrame(comparison_table)
         comparison_df.to_csv('propensity_score_comparison_results.csv', index=False, encoding='utf-8-sig')
-        print("\n详细比较结果已保存到 'propensity_score_comparison_results.csv'")
+        print("\nDetailed comparison results have been saved to 'propensity_score_comparison_results.csv'")
         
         # 绘制ROC曲线
-        print("\n绘制ROC曲线...")
-        plot_roc_curve(obs_imp_results, "观测值与插补值区分的ROC曲线")
+        print("\nPlotting ROC curve...")
+        plot_roc_curve(obs_imp_results, "ROC Curve for Distinguishing Observed vs Imputed Values")
         
         # 返回结果字典
         return {
             'method_auc': method_auc,
             'maxabs_auc': maxabs_auc,
             'mice_auc': mice_auc,
+            'rf_mice_auc': rf_mice_auc,
             'winner': winner
         }
         
@@ -430,7 +479,8 @@ if __name__ == "__main__":
     original_file = os.path.join(current_dir, "cell_performance.csv")
     maxabs_file = os.path.join(current_dir, "imputed_data_maxabs.csv")
     mice_file = os.path.join(current_dir, "imputed_data_mice.csv")
+    rf_mice_file = os.path.join(current_dir, "imputed_data_rf_mice.csv")
     
     # 使用倾向性得分平衡检查比较插补方法
-    print("使用倾向性得分平衡检查比较插补方法...\n")
-    compare_imputation_methods_with_propensity_score(original_file, maxabs_file, mice_file)
+    print("Using propensity score balance check to compare imputation methods...\n")
+    compare_imputation_methods_with_propensity_score(original_file, maxabs_file, mice_file, rf_mice_file)

@@ -4,7 +4,7 @@
 """
 比较插补方法的相关系数矩阵
 
-这个脚本比较imputed_data_maxabs.csv与imputed_data_mice.csv两种插补方法的效果，
+这个脚本比较imputed_data_maxabs.csv、imputed_data_mice.csv与imputed_data_rf_mice.csv三种插补方法的效果，
 通过计算它们与cell_performance.csv中基于成对完整观测值计算的相关系数矩阵的差异。
 
 评估方法：
@@ -114,7 +114,7 @@ def calculate_frobenius_norm(matrix1, matrix2):
     return diff
 
 
-def visualize_correlation_matrices(original_corr, maxabs_corr, mice_corr):
+def visualize_correlation_matrices(original_corr, maxabs_corr, mice_corr, rf_mice_corr):
     """
     可视化相关系数矩阵
     
@@ -126,32 +126,39 @@ def visualize_correlation_matrices(original_corr, maxabs_corr, mice_corr):
         MaxAbs插补后数据的相关系数矩阵
     mice_corr : pandas.DataFrame
         MICE插补后数据的相关系数矩阵
+    rf_mice_corr : pandas.DataFrame
+        RF-MICE插补后数据的相关系数矩阵
     """
-    plt.figure(figsize=(18, 6))
+    plt.figure(figsize=(20, 10))
     
     # 原始数据相关系数矩阵
-    plt.subplot(1, 3, 1)
+    plt.subplot(2, 2, 1)
     sns.heatmap(original_corr, annot=False, cmap='coolwarm', vmin=-1, vmax=1)
     plt.title('原始数据相关系数矩阵（成对完整观测值）')
     
     # MaxAbs插补数据相关系数矩阵
-    plt.subplot(1, 3, 2)
+    plt.subplot(2, 2, 2)
     sns.heatmap(maxabs_corr, annot=False, cmap='coolwarm', vmin=-1, vmax=1)
     plt.title('MaxAbs插补数据相关系数矩阵')
     
     # MICE插补数据相关系数矩阵
-    plt.subplot(1, 3, 3)
+    plt.subplot(2, 2, 3)
     sns.heatmap(mice_corr, annot=False, cmap='coolwarm', vmin=-1, vmax=1)
     plt.title('MICE插补数据相关系数矩阵')
+    
+    # RF-MICE插补数据相关系数矩阵
+    plt.subplot(2, 2, 4)
+    sns.heatmap(rf_mice_corr, annot=False, cmap='coolwarm', vmin=-1, vmax=1)
+    plt.title('RF-MICE插补数据相关系数矩阵')
     
     plt.tight_layout()
     plt.savefig('correlation_matrices_comparison.png')
     print("相关系数矩阵可视化已保存到 'correlation_matrices_comparison.png'")
 
 
-def compare_correlation_matrices(original_file, maxabs_file, mice_file):
+def compare_correlation_matrices(original_file, maxabs_file, mice_file, rf_mice_file):
     """
-    比较MaxAbs和MICE两种插补方法的相关系数矩阵
+    比较MaxAbs、MICE和RF-MICE三种插补方法的相关系数矩阵
     
     参数
     ----------
@@ -161,14 +168,17 @@ def compare_correlation_matrices(original_file, maxabs_file, mice_file):
         MaxAbs处理后的数据文件路径
     mice_file : str
         MICE处理后的数据文件路径
+    rf_mice_file : str
+        RF-MICE处理后的数据文件路径
     """
     try:
         # 加载数据
         original_df = load_data(original_file)
         maxabs_df = load_data(maxabs_file)
         mice_df = load_data(mice_file)
+        rf_mice_df = load_data(rf_mice_file)
         
-        if original_df is None or maxabs_df is None or mice_df is None:
+        if original_df is None or maxabs_df is None or mice_df is None or rf_mice_df is None:
             print("无法加载所有必要的数据文件")
             return
         
@@ -183,23 +193,33 @@ def compare_correlation_matrices(original_file, maxabs_file, mice_file):
         print("计算MICE插补后数据的相关系数矩阵")
         mice_corr = calculate_correlation_matrix(mice_df)
         
+        print("计算RF-MICE插补后数据的相关系数矩阵")
+        rf_mice_corr = calculate_correlation_matrix(rf_mice_df)
+        
         # 计算Frobenius范数差异
         print("\n计算Frobenius范数差异")
         maxabs_diff = calculate_frobenius_norm(original_corr, maxabs_corr)
         mice_diff = calculate_frobenius_norm(original_corr, mice_corr)
+        rf_mice_diff = calculate_frobenius_norm(original_corr, rf_mice_corr)
         
         print(f"MaxAbs插补方法与原始数据的Frobenius范数差异: {maxabs_diff:.4f}")
         print(f"MICE插补方法与原始数据的Frobenius范数差异: {mice_diff:.4f}")
+        print(f"RF-MICE插补方法与原始数据的Frobenius范数差异: {rf_mice_diff:.4f}")
         
         # 判断哪种方法更好
-        if maxabs_diff < mice_diff:
-            conclusion = "MaxAbs插补方法在保持相关系数矩阵方面表现更好，更接近原始数据分布"
+        min_diff = min(maxabs_diff, mice_diff, rf_mice_diff)
+        
+        if min_diff == maxabs_diff:
+            conclusion = "MaxAbs插补方法在保持相关系数矩阵方面表现最好，更接近原始数据分布"
             winner = "MaxAbs"
-        elif mice_diff < maxabs_diff:
-            conclusion = "MICE插补方法在保持相关系数矩阵方面表现更好，更接近原始数据分布"
+        elif min_diff == mice_diff:
+            conclusion = "MICE插补方法在保持相关系数矩阵方面表现最好，更接近原始数据分布"
             winner = "MICE"
+        elif min_diff == rf_mice_diff:
+            conclusion = "RF-MICE插补方法在保持相关系数矩阵方面表现最好，更接近原始数据分布"
+            winner = "RF-MICE"
         else:
-            conclusion = "两种方法在保持相关系数矩阵方面表现相当"
+            conclusion = "三种方法在保持相关系数矩阵方面表现相当"
             winner = "平局"
         
         print(f"\n结论: {conclusion}")
@@ -209,6 +229,7 @@ def compare_correlation_matrices(original_file, maxabs_file, mice_file):
             '评估指标': '相关系数矩阵Frobenius范数差异',
             'MaxAbs差异': maxabs_diff,
             'MICE差异': mice_diff,
+            'RF-MICE差异': rf_mice_diff,
             '胜者': winner
         }]
         
@@ -219,15 +240,17 @@ def compare_correlation_matrices(original_file, maxabs_file, mice_file):
         
         # 可视化相关系数矩阵
         print("\n生成相关系数矩阵可视化...")
-        visualize_correlation_matrices(original_corr, maxabs_corr, mice_corr)
+        visualize_correlation_matrices(original_corr, maxabs_corr, mice_corr, rf_mice_corr)
         
         # 返回结果字典
         return {
             'original_corr': original_corr,
             'maxabs_corr': maxabs_corr,
             'mice_corr': mice_corr,
+            'rf_mice_corr': rf_mice_corr,
             'maxabs_diff': maxabs_diff,
             'mice_diff': mice_diff,
+            'rf_mice_diff': rf_mice_diff,
             'winner': winner
         }
         
@@ -244,7 +267,8 @@ if __name__ == "__main__":
     original_file = os.path.join(current_dir, "cell_performance.csv")
     maxabs_file = os.path.join(current_dir, "imputed_data_maxabs.csv")
     mice_file = os.path.join(current_dir, "imputed_data_mice.csv")
+    rf_mice_file = os.path.join(current_dir, "imputed_data_rf_mice.csv")
     
     # 比较相关系数矩阵
     print("比较插补方法的相关系数矩阵...\n")
-    compare_correlation_matrices(original_file, maxabs_file, mice_file)
+    compare_correlation_matrices(original_file, maxabs_file, mice_file, rf_mice_file)
